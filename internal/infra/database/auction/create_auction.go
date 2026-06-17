@@ -5,7 +5,10 @@ import (
 	"fullcycle-auction_go/configuration/logger"
 	"fullcycle-auction_go/internal/entity/auction_entity"
 	"fullcycle-auction_go/internal/internal_error"
+	"os"
+	"time"
 
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
@@ -18,13 +21,16 @@ type AuctionEntityMongo struct {
 	Status      auction_entity.AuctionStatus    `bson:"status"`
 	Timestamp   int64                           `bson:"timestamp"`
 }
+
 type AuctionRepository struct {
-	Collection *mongo.Collection
+	Collection      *mongo.Collection
+	auctionDuration time.Duration
 }
 
 func NewAuctionRepository(database *mongo.Database) *AuctionRepository {
 	return &AuctionRepository{
-		Collection: database.Collection("auctions"),
+		Collection:      database.Collection("auctions"),
+		auctionDuration: getAuctionDuration(),
 	}
 }
 
@@ -40,11 +46,33 @@ func (ar *AuctionRepository) CreateAuction(
 		Status:      auctionEntity.Status,
 		Timestamp:   auctionEntity.Timestamp.Unix(),
 	}
+
 	_, err := ar.Collection.InsertOne(ctx, auctionEntityMongo)
 	if err != nil {
 		logger.Error("Error trying to insert auction", err)
 		return internal_error.NewInternalServerError("Error trying to insert auction")
 	}
 
+	go ar.closeAuctionAfterDuration(auctionEntity.Id)
+
 	return nil
+}
+
+func (ar *AuctionRepository) closeAuctionAfterDuration(auctionId string) {
+	time.Sleep(ar.auctionDuration)
+
+	filter := bson.M{"_id": auctionId}
+	update := bson.M{"$set": bson.M{"status": auction_entity.Completed}}
+
+	if _, err := ar.Collection.UpdateOne(context.Background(), filter, update); err != nil {
+		logger.Error("Error trying to close auction automatically", err)
+	}
+}
+
+func getAuctionDuration() time.Duration {
+	duration, err := time.ParseDuration(os.Getenv("AUCTION_DURATION"))
+	if err != nil {
+		return 5 * time.Minute
+	}
+	return duration
 }
